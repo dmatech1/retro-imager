@@ -58,6 +58,9 @@ uint16_t crc16_update(uint16_t crc, const void *data, size_t data_len)
     return crc & 0xffff;
 }
 
+
+#pragma pack(push)
+#pragma pack(1)
 struct header_packet_t {
     uint8_t     cmd;            // Always 0.
     uint8_t     status;         // Should be 0.
@@ -76,7 +79,39 @@ struct data_packet_t {
     uint8_t     contents[512];  // Actual contents of the sector.
     uint16_t    crc16;          // CRC-16 of entire packet up to this point.
 };
+#pragma pack(pop)
 
+const char *get_disk_error(uint8_t status) {
+    switch (status) {
+    case 0x00:  return "no error";
+    case 0x01:  return "invalid command";
+    case 0x02:  return "address mark not found";
+    case 0x03:  return "disk write-protected (F)";
+    case 0x04:  return "sector not found";
+    case 0x05:  return "reset failed (H)";
+    case 0x06:  return "floppy disk removed (F)";
+    case 0x07:  return "bad parameter table (H)";
+    case 0x08:  return "DMA overrun (F)";
+    case 0x09:  return "DMA crossed 64 KB boundary";
+    case 0x0A:  return "bad sector flag (H)";
+    case 0x0B:  return "bad track flag (H)";
+    case 0x0C:  return "media type not found (F)";
+    case 0x0D:  return "invalid number of sectors on format (H)";
+    case 0x0E:  return "control data address mark detected (H)";
+    case 0x0F:  return "DMA arbitration level out of range (H)";
+    case 0x10:  return "uncorrectable CRC or ECC data error";
+    case 0x11:  return "ECC corrected data error (H)";
+    case 0x20:  return "controller failed";
+    case 0x40:  return "seek failed";
+    case 0x80:  return "disk timed out (failed to respond)";
+    case 0xAA:  return "drive not ready (H)";
+    case 0xBB:  return "undefined error (H)";
+    case 0xCC:  return "write fault (H)";
+    case 0xE0:  return "status register error (H)";
+    case 0xFF:  return "sense operation failed (H)";
+    default:    return "unknown error code";
+    }
+}
 
 
 ssize_t readfully(int fd, void *buf, size_t count) {
@@ -105,11 +140,15 @@ int main(int argc, char **argv) {
     uint8_t cmd;
     struct header_packet_t hp;
     struct data_packet_t  dp;
+    FILE *f;
+    
+    f = fopen("hardcard.img", "wb");
 
     for (;;) {
         int z = readfully(STDIN_FILENO, &cmd, sizeof(uint8_t));
         if (z != 1) {
             printf("wtf? %i\n", z);
+            fclose(f);
             return 1;
         } else if (cmd == 0) {
             hp.cmd = cmd;
@@ -121,11 +160,18 @@ int main(int argc, char **argv) {
             dp.cmd = cmd;
             readfully(STDIN_FILENO, &dp.status, sizeof(dp) - 1);
             uint16_t expected_crc16 = crc16_update(0, &dp, sizeof(dp) - sizeof(uint16_t));
-            printf("Sector: [%i, %i, %i], status=%i, crc16=%i, expected_crc16=%i, good=%c\n", dp.cylinder, dp.head, dp.sector, dp.status, dp.crc16, expected_crc16, 
+            long lba = (dp.cylinder * (hp.head + 1) + dp.head) * hp.sector + dp.sector - 1;
+
+            printf("Sector: [%i, %i, %i], status=%i, crc16=%i, expected_crc16=%i, lba=%li, good=%c\n", dp.cylinder, dp.head, dp.sector, dp.status, dp.crc16, expected_crc16, lba,
                 ((expected_crc16 == dp.crc16) && (dp.status == 0)) ? 'Y' : 'N');
+
+            // There should be a seek here, but right now, I don't care.
+            fwrite(dp.contents, 512, 1, f);
+
         } else if (cmd == 0xFF) {
             printf("Done!\n");
-            return 0;
         }
     }
+    fclose(f);
+
 }

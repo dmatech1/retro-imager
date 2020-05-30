@@ -1,9 +1,9 @@
 #ifndef __TURBOC__
-// These would otherwise gum up the works.
-#define near
-#define far
-#define _seg
-#define interrupt
+    // These would otherwise break intellisense.
+    #define near
+    #define far
+    #define _seg
+    #define interrupt
 #endif
 
 
@@ -14,34 +14,26 @@
 #include "bios.h"
 
 #ifdef __TURBOC__
+    /* Turbo C++ doesn't have "stdint.h", so I'll define these here. */
+    typedef long            int32_t;
+    typedef unsigned long   uint32_t;
 
-/* Turbo C++ doesn't have "stdint.h", so I'll define these here. */
-typedef long            int32_t;
-typedef unsigned long   uint32_t;
+    typedef int             int16_t;
+    typedef unsigned int    uint16_t;
 
-typedef int             int16_t;
-typedef unsigned int    uint16_t;
-
-typedef unsigned char   uint8_t;
-typedef signed char     int8_t;
-
+    typedef unsigned char   uint8_t;
+    typedef signed char     int8_t;
 #else
+    // Turbo C++ register pseudo-variables.  I'm not sure if it's wise to use them.
 
-/*
-Turbo C++ register pseudo-variables.
-*/
+    #include "stdint.h"
+    static uint16_t _AX, _BX, _CX, _DX, _SI, _DI, _BP, _SP,
+    _CS, _DS, _ES, __SS, _FLAGS;
 
-/*
-These are actually "unsigned int" in Turbo C++, but I am changing
-them to something more portable.
-*/
-#include "stdint.h"
-static uint16_t _AX, _BX, _CX, _DX, _SI, _DI, _BP, _SP,
-_CS, _DS, _ES, __SS, _FLAGS;
+    static uint8_t  _AH, _AL, _BH, _BL, _CH, _CL, _DH, _DL;
 
-static uint8_t  _AH, _AL, _BH, _BL, _CH, _CL, _DH, _DL;
-
-static void geninterrupt(uint8_t i) { }
+    // Generate an interrupt.
+    static void geninterrupt(uint8_t i) { }
 #endif
 
 
@@ -76,7 +68,10 @@ unsigned char int14_init(uint16_t port)
     return 0;
 }
 
-
+/*
+    Meant to serve as both input to and output from INT 13H calls.  Existing
+    functions in Turbo C++ 3.0 were not sufficient.
+*/
 struct int13_data_t {
     uint16_t    cylinder;       // Range: 0..1023
     uint8_t     head;           // Range: 0..255
@@ -103,7 +98,7 @@ void int14_deinit(uint16_t port) {
 }
 
 
-/**
+/*
 * Send byte
 */
 void int14_send_byte(uint16_t port, uint8_t b)
@@ -124,6 +119,11 @@ void bulk_xmit(uint16_t port, const void *data, size_t count) {
     }
 }
 
+/*
+    Makes a call to the INT 13H disk I/O routines.  I could possibly squeeze
+    out a bit more performance (and user-friendliness) by not doing the
+    sections that aren't needed for each command.
+*/
 uint8_t int13(uint8_t drive, uint8_t cmd, struct int13_data_t *data) {
     union REGS regs;
     struct SREGS seg_regs;
@@ -208,12 +208,14 @@ uint16_t crc16_update(uint16_t crc, const void *data, size_t data_len)
 }
 
 
+#pragma pack(push)
+#pragma pack(1)
 struct header_packet_t {
     uint8_t     cmd;            // Always 0.
     uint8_t     status;         // Should be 0.
-    uint16_t    cylinder;
-    uint8_t     head;
-    uint8_t     sector;
+    uint16_t    cylinder;       // [0..1023]    Maximum cylinder number value.
+    uint8_t     head;           // [0..255]     Maximum head number value.
+    uint8_t     sector;         // [1..63]      Maximum sector number.
     uint16_t    crc16;          // CRC-16 of entire packet up to this point.
 };
 
@@ -223,13 +225,14 @@ struct footer_packet_t {
 
 struct data_packet_t {
     uint8_t     cmd;            // Always 1.
-    uint8_t     status;
-    uint16_t    cylinder;
-    uint8_t     head;
-    uint8_t     sector;
+    uint8_t     status;         // Should be 0.
+    uint16_t    cylinder;       // [0..1023]    Cylinder number.
+    uint8_t     head;           // [0..255]     Head number.
+    uint8_t     sector;         // [1..63]      Sector number.
     uint8_t     contents[512];  // Actual contents of the sector.
     uint16_t    crc16;          // CRC-16 of entire packet up to this point.
 };
+#pragma pack(pop)
 
 struct data_packet_t packet;
 
@@ -252,6 +255,7 @@ int main(int argc, char **argv) {
     max_head = di.head;
     max_sect = di.sector;
 
+    // Send the header packet.
     struct header_packet_t header;
     header.cmd = 0;
     header.cylinder = max_cyl;
@@ -259,13 +263,13 @@ int main(int argc, char **argv) {
     header.sector = max_sect;
     header.status = n;
     header.crc16 = crc16_update(0, &header, sizeof(header) - sizeof(uint16_t));
-
     bulk_xmit(SERIAL_PORT, &header, sizeof(header));
 
     // Now loop through all cylinders, heads, and sectors.
     for (uint16_t c=0; c <= max_cyl; c++) {
         for (uint8_t h=0; h <= max_head; h++) {
             for (uint8_t s = 1; s <= max_sect; s++) {
+
                 di.sect_count = 1;
                 di.cylinder = c;
                 di.head = h;
@@ -282,11 +286,13 @@ int main(int argc, char **argv) {
 
                 printf("n=%x, c=%i, h=%i, s=%i\n", n, c, h, s);
 
+                // Send it.
                 bulk_xmit(SERIAL_PORT, &packet, sizeof(packet));
             }
         }
     }
 
+    // This is my end-of-transfer marker.  Not ideal, but it works.
     int14_send_byte(SERIAL_PORT, 0xFF);
 
     int14_flush(SERIAL_PORT);
